@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(nmap --version)",
+      "Bash(python -c \"import vuln_db, scanner; print\\('Import OK'\\); print\\('Subnet locali:', [str\\(s\\) for s in scanner.get_local_subnets\\(\\)]\\); print\\('Porte monitorate:', len\\(vuln_db.COMMON_PORTS\\)\\)\")",
+      "Bash(python app.py)",
+      "Bash(git --version)",
+      "Bash(gh --version)",
+      "Bash(gh auth *)",
+      "Bash(git config *)",
+      "Bash(git init *)",
+      "Bash(git add *)"
+    ]
+  }
+}
