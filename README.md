@@ -51,6 +51,18 @@ Puoi interrompere in qualsiasi momento con **■ Stop**.
 - Ogni risultato include **gravità** (CRITICAL → INFO), **descrizione del rischio**
   e **rimedio concreto**.
 
+### 🔎 Enumerazione — "cosa si può ottenere dalle porte aperte"
+Oltre a elencare le porte, Sentry mostra **quali dati un attaccante può ricavare**
+da ciascun servizio (le righe `🔎` nell'albero e nel report):
+
+| Servizio | Informazioni estratte |
+|---|---|
+| **NetBIOS** (UDP 137) | nome computer, **dominio/workgroup**, utente, MAC, condivisioni attive (come `nbtstat -A`) |
+| **SMB** (445/139) | rilevamento **SMBv1 abilitato** (rischio EternalBlue/WannaCry) |
+| **SNMP** (UDP 161) | descrizione del dispositivo se la community `public` è valida |
+| **HTTP/HTTPS** | header `Server`, tecnologia, **titolo pagina**, pannelli di login, **versione TLS** debole |
+| **FTP/SSH/Telnet** | versione e banner del servizio |
+
 ### Livelli di gravità
 | Livello | Significato |
 |---|---|
@@ -80,5 +92,6 @@ Puoi interrompere in qualsiasi momento con **■ Stop**.
 |---|---|
 | `app.py` | Interfaccia grafica (Tkinter) |
 | `scanner.py` | Motore: discovery, port scan, controlli |
+| `recon.py` | Enumerazione servizi (NetBIOS, SMB, SNMP, HTTP/TLS) |
 | `vuln_db.py` | Knowledge base porte/servizi + rimedi |
 | `Sentry.bat` | Avvio rapido su Windows |

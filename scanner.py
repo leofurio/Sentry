@@ -24,6 +24,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from vuln_db import COMMON_PORTS, get_port_info, SEVERITY_WEIGHT
+import recon
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,7 @@ class HostResult:
         self.open_ports = []      # lista di int
         self.findings = []        # lista di Finding
         self.banners = {}         # porta -> banner string
+        self.recon = []           # lista di recon.ReconItem (info ricavate)
 
     @property
     def max_severity(self):
@@ -398,9 +400,87 @@ def analyze_host(ip, ports=None, stop_event=None, log=None):
             evidence=evidence,
         ))
 
+    # --- Fase di enumerazione: "cosa si puo' ottenere" ---
+    if not (stop_event and stop_event.is_set()):
+        _run_recon(ip, result, log=log)
+
     # Ordina i finding per severita' decrescente
     result.findings.sort(key=lambda f: SEVERITY_WEIGHT[f.severity], reverse=True)
     return result
+
+
+# Porte web in chiaro / cifrate per l'enumerazione HTTP
+_HTTP_PORTS = (80, 8080, 8000, 8888, 8008, 3000, 5000, 9000, 8081)
+_HTTPS_PORTS = (443, 8443)
+
+
+def _add_recon(result, item):
+    """Aggiunge un ReconItem e, se porta un rischio, anche un Finding."""
+    if item is None:
+        return
+    result.recon.append(item)
+    if item.risk:
+        severity, issue, remediation, evidence = item.risk
+        # porta 'logica' per il finding: 0 = informazione da enumerazione
+        result.findings.append(Finding(
+            port=0,
+            service=item.source,
+            severity=severity,
+            issue=issue,
+            remediation=remediation,
+            evidence=evidence,
+        ))
+
+
+def _run_recon(ip, result, log=None):
+    """Esegue l'enumerazione dei servizi e popola result.recon / findings."""
+    ports = set(result.open_ports)
+
+    if log:
+        log("  Enumerazione su %s ..." % ip)
+
+    # NetBIOS (UDP 137) - sempre, anche se 139/445 non risultano in scan TCP
+    try:
+        nb = recon.recon_netbios(ip)
+        if nb:
+            item, info = nb
+            _add_recon(result, item)
+            if not result.hostname and info.get("computer"):
+                result.hostname = info["computer"]
+            if not result.mac and info.get("mac"):
+                result.mac = info["mac"]
+    except Exception:
+        pass
+
+    # SNMP (UDP 161) - sempre (la scan TCP non rileva UDP)
+    try:
+        _add_recon(result, recon.recon_snmp(ip))
+    except Exception:
+        pass
+
+    # SMB / SMBv1
+    if 445 in ports or 139 in ports:
+        port = 445 if 445 in ports else 139
+        try:
+            _add_recon(result, recon.recon_smb(ip, port))
+        except Exception:
+            pass
+
+    # HTTP
+    for p in _HTTP_PORTS:
+        if p in ports:
+            try:
+                _add_recon(result, recon.http_info(ip, p, use_tls=False))
+            except Exception:
+                pass
+
+    # HTTPS
+    for p in _HTTPS_PORTS:
+        if p in ports:
+            try:
+                _add_recon(result, recon.http_info(ip, p, use_tls=True))
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------

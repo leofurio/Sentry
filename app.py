@@ -35,6 +35,7 @@ class App(tk.Tk):
         self.scan_thread = None
         self.results = []          # lista di HostResult
         self._row_to_finding = {}  # id riga albero -> (host, finding)
+        self._row_to_recon = {}    # id riga albero -> (host, ReconItem)
 
         self._build_ui()
         self._populate_subnets()
@@ -189,6 +190,7 @@ class App(tk.Tk):
         # Reset UI
         self.tree.delete(*self.tree.get_children())
         self._row_to_finding.clear()
+        self._row_to_recon.clear()
         self.results = []
         self.summary_var.set("")
         self._set_detail("Seleziona una riga per vedere il dettaglio e il rimedio consigliato.")
@@ -244,6 +246,7 @@ class App(tk.Tk):
     def _render_results(self, results):
         self.tree.delete(*self.tree.get_children())
         self._row_to_finding.clear()
+        self._row_to_recon.clear()
 
         counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
 
@@ -268,10 +271,23 @@ class App(tk.Tk):
                 row = self.tree.insert(
                     host_node, "end",
                     text="",
-                    values=(f.severity, f.service, f.port, f.issue),
+                    values=(f.severity, f.service,
+                            f.port if f.port else "—", f.issue),
                     tags=(f.severity,),
                 )
                 self._row_to_finding[row] = (host, f)
+
+            # Righe "Cosa si puo' ottenere" (enumerazione)
+            for item in host.recon:
+                preview = item.lines[0] if item.lines else ""
+                row = self.tree.insert(
+                    host_node, "end",
+                    text="",
+                    values=("INFO", "🔎 " + item.source, "",
+                            "Info ricavabili: " + preview),
+                    tags=("INFO",),
+                )
+                self._row_to_recon[row] = (host, item)
 
         total_find = sum(counts.values())
         parts = []
@@ -297,12 +313,29 @@ class App(tk.Tk):
         if not sel:
             return
         row = sel[0]
+        if row in self._row_to_recon:
+            host, item = self._row_to_recon[row]
+            lines = [
+                "Host:    %s%s" % (host.ip, "  (%s)" % host.hostname if host.hostname else ""),
+                "Fonte:   %s" % item.source,
+                "",
+                "🔎 Informazioni che si possono ottenere:",
+            ]
+            lines += ["    " + ln for ln in item.lines]
+            if item.risk:
+                sev, issue, remediation, _ev = item.risk
+                lines += ["", "⚠️  Rischio (%s):" % sev, "    " + issue,
+                          "", "Rimedio consigliato:", "    " + remediation]
+            self._set_detail("\n".join(lines))
+            return
         if row in self._row_to_finding:
             host, f = self._row_to_finding[row]
+            port_txt = ("%d  (%s)" % (f.port, f.service)) if f.port else \
+                       ("enumerazione (%s)" % f.service)
             lines = [
                 "Host:        %s%s" % (host.ip, "  (%s)" % host.hostname if host.hostname else ""),
                 "MAC:         %s" % (host.mac or "n/d"),
-                "Porta:       %d  (%s)" % (f.port, f.service),
+                "Porta:       %s" % port_txt,
                 "Gravità:     %s" % f.severity,
                 "",
                 "Rischio:",
@@ -372,18 +405,27 @@ class App(tk.Tk):
                 rows.append('<tr><td colspan="5"><i>Nessuna osservazione.</i></td></tr>')
             for f in host.findings:
                 color = SEVERITY_COLOR.get(f.severity, "#000")
+                port_txt = str(f.port) if f.port else "—"
                 rows.append(
                     '<tr>'
                     '<td><span class="badge" style="background:%s">%s</span></td>'
-                    '<td>%d</td><td>%s</td><td>%s<br><small>%s</small></td>'
+                    '<td>%s</td><td>%s</td><td>%s<br><small>%s</small></td>'
                     '<td>%s</td>'
                     '</tr>' % (
-                        color, f.severity, f.port,
+                        color, f.severity, port_txt,
                         html.escape(f.service),
                         html.escape(f.issue),
                         html.escape(f.evidence) if f.evidence else "",
                         html.escape(f.remediation),
                     ))
+            # Sezione "Cosa si puo' ottenere" (enumerazione)
+            for item in host.recon:
+                body = "<br>".join(html.escape(ln) for ln in item.lines)
+                rows.append(
+                    '<tr class="recon"><td>🔎 INFO</td>'
+                    '<td>—</td><td>%s</td>'
+                    '<td colspan="2"><b>Info ricavabili</b><br>%s</td></tr>'
+                    % (html.escape(item.source), body))
 
         chips = " ".join(
             '<span class="chip" style="background:%s">%s: %d</span>'
@@ -406,6 +448,7 @@ class App(tk.Tk):
  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid #eee;font-size:13px;vertical-align:top}
  th{background:#fafafa;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#555}
  tr.host td{background:#eef3f8;font-size:13px}
+ tr.recon td{background:#f3f9f3;font-size:12px;color:#33691e}
  small{color:#777}
  footer{padding:18px 32px;color:#999;font-size:12px}
 </style></head>
