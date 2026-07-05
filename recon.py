@@ -428,6 +428,133 @@ def http_info(ip, port, use_tls=False, timeout=3.0):
 
 
 # ---------------------------------------------------------------------------
+# MongoDB  (TCP 27017)  -  verifica REALE se l'accesso e' senza autenticazione
+# ---------------------------------------------------------------------------
+
+def _bson(fields):
+    """Serializza un documento BSON minimale.
+    fields = lista di (tipo, nome, valore_gia'_serializzato)."""
+    body = b""
+    for tag, name, value in fields:
+        body += bytes([tag]) + name.encode() + b"\x00" + value
+    body += b"\x00"
+    return struct.pack("<i", len(body) + 4) + body
+
+
+def _bson_int32(value):
+    return struct.pack("<i", value)
+
+
+def _bson_str(value):
+    raw = value.encode()
+    return struct.pack("<i", len(raw) + 1) + raw + b"\x00"
+
+
+def _op_msg(doc, req_id=1):
+    """Incapsula un documento BSON in un messaggio OP_MSG (opcode 2013)."""
+    body = struct.pack("<I", 0) + b"\x00" + doc      # flagBits=0, section kind 0
+    header = struct.pack("<iiii", 16 + len(body), req_id, 0, 2013)
+    return header + body
+
+
+def _recv_exact(sock, n):
+    """Legge esattamente n byte (o meno se la connessione si chiude)."""
+    buf = b""
+    while len(buf) < n:
+        try:
+            part = sock.recv(n - len(buf))
+        except socket.timeout:
+            break
+        if not part:
+            break
+        buf += part
+    return buf
+
+
+def _mongo_command(sock, name, req_id):
+    """Invia un comando OP_MSG '{name:1, $db:admin}' e ritorna il BSON di risposta."""
+    doc = _bson([(0x10, name, _bson_int32(1)), (0x02, "$db", _bson_str("admin"))])
+    sock.sendall(_op_msg(doc, req_id))
+    head = _recv_exact(sock, 4)
+    if len(head) < 4:
+        return b""
+    length = struct.unpack("<i", head)[0]
+    if length < 4 or length > 48 * 1024 * 1024:
+        return b""
+    rest = _recv_exact(sock, length - 4)
+    full = head + rest
+    # header(16) + flagBits(4) + section kind(1) = 21 byte prima del documento
+    return full[21:] if len(full) > 21 else b""
+
+
+def _bson_find_str(doc, key):
+    """Estrae il valore di un campo stringa BSON (tipo 0x02) dato il nome."""
+    marker = b"\x02" + key.encode() + b"\x00"
+    idx = doc.find(marker)
+    if idx < 0:
+        return ""
+    p = idx + len(marker)
+    if p + 4 > len(doc):
+        return ""
+    strlen = struct.unpack("<i", doc[p:p + 4])[0]
+    p += 4
+    if strlen < 1 or p + strlen > len(doc):
+        return ""
+    return doc[p:p + strlen - 1].decode("latin-1", errors="replace")
+
+
+_MONGO_AUTH_MARKERS = (b"requires authentication", b"not authorized",
+                       b"Unauthorized", b"authentication", b"AuthenticationFailed")
+
+
+def mongo_probe(ip, port=27017, timeout=2.5):
+    """
+    Interroga MongoDB col wire protocol (OP_MSG) per determinare se l'accesso
+    e' senza autenticazione. Ritorna un ReconItem o None se non e' MongoDB.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            if s.connect_ex((ip, port)) != 0:
+                return None
+            # 1) handshake 'hello': conferma che parliamo davvero con MongoDB
+            hello = _mongo_command(s, "hello", 1)
+            if not hello or not (b"maxWireVersion" in hello or
+                                 b"isWritablePrimary" in hello or b"ismaster" in hello):
+                return None
+            # 2) buildInfo: versione (best-effort, puo' richiedere auth)
+            version = _bson_find_str(_mongo_command(s, "buildInfo", 2), "version")
+            # 3) listDatabases: richiede privilegi -> distingue no-auth da auth
+            dbs = _mongo_command(s, "listDatabases", 3)
+    except OSError:
+        return None
+
+    no_auth = bool(dbs) and b"totalSize" in dbs and not any(
+        m in dbs for m in _MONGO_AUTH_MARKERS)
+    auth_enabled = any(m in dbs for m in _MONGO_AUTH_MARKERS)
+
+    lines = ["MongoDB raggiungibile in rete (handshake wire protocol riuscito)."]
+    if version:
+        lines.append("Versione server: " + version)
+
+    if no_auth:
+        lines.append("listDatabases ESEGUITO senza credenziali: accesso ai dati aperto.")
+        risk = ("CRITICAL",
+                "MongoDB accessibile SENZA autenticazione: lettura/scrittura di tutti "
+                "i database e rischio concreto di data breach.",
+                "Abilita l'autenticazione (--auth / security.authorization), crea "
+                "utenti applicativi, bind su localhost e usa il firewall.",
+                "listDatabases eseguito con successo senza credenziali")
+        return ReconItem("MongoDB (porta %d)" % port, lines, risk)
+
+    if auth_enabled:
+        lines.append("L'autenticazione e' attiva (listDatabases negato senza credenziali).")
+    else:
+        lines.append("Stato autenticazione non determinabile con certezza.")
+    return ReconItem("MongoDB (porta %d)" % port, lines, None)
+
+
+# ---------------------------------------------------------------------------
 # Banner generico (FTP/SSH/SMTP/Telnet ...)
 # ---------------------------------------------------------------------------
 

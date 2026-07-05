@@ -14,6 +14,7 @@ import webbrowser
 import os
 import html
 import ipaddress
+import platform
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -22,6 +23,28 @@ from vuln_db import SEVERITY_COLOR, SEVERITY_WEIGHT
 
 
 APP_TITLE = "Sentry — Network Vulnerability Checker"
+
+
+def _ui_font(size, bold=False):
+    """Font proporzionale adatto alla piattaforma (Segoe UI e' solo Windows)."""
+    system = platform.system()
+    if system == "Windows":
+        family = "Segoe UI"
+    elif system == "Darwin":
+        family = "Helvetica Neue"
+    else:
+        family = "DejaVu Sans"
+    return (family, size, "bold") if bold else (family, size)
+
+
+def _mono_font(size):
+    """Font monospazio adatto alla piattaforma."""
+    system = platform.system()
+    if system == "Windows":
+        return ("Consolas", size)
+    if system == "Darwin":
+        return ("Menlo", size)
+    return ("DejaVu Sans Mono", size)
 
 
 class App(tk.Tk):
@@ -48,16 +71,16 @@ class App(tk.Tk):
         except tk.TclError:
             pass
         style.configure("Treeview", rowheight=24)
-        style.configure("Header.TLabel", font=("Segoe UI", 14, "bold"))
+        style.configure("Header.TLabel", font=_ui_font(14, bold=True))
 
         # --- Intestazione marchio ----------------------------------------
         header = tk.Frame(self, background="#1565c0")
         header.pack(fill="x")
         tk.Label(header, text="🛡️  Sentry", background="#1565c0",
-                 foreground="#ffffff", font=("Segoe UI", 16, "bold"),
+                 foreground="#ffffff", font=_ui_font(16, bold=True),
                  padx=14, pady=8).pack(side="left")
         tk.Label(header, text="La sentinella della tua rete", background="#1565c0",
-                 foreground="#cfe0f5", font=("Segoe UI", 10)).pack(side="left", pady=(2, 0))
+                 foreground="#cfe0f5", font=_ui_font(10)).pack(side="left", pady=(2, 0))
 
         # --- Barra superiore ---------------------------------------------
         top = ttk.Frame(self, padding=(12, 10))
@@ -90,7 +113,7 @@ class App(tk.Tk):
         # --- Riepilogo severita' -----------------------------------------
         self.summary_var = tk.StringVar(value="")
         summ = ttk.Label(self, textvariable=self.summary_var, padding=(14, 6),
-                         font=("Segoe UI", 10))
+                         font=_ui_font(10))
         summ.pack(fill="x")
 
         # --- Area centrale: albero risultati + dettaglio -----------------
@@ -127,7 +150,7 @@ class App(tk.Tk):
         detail_frame = ttk.LabelFrame(paned, text="Dettaglio e rimedio", padding=8)
         paned.add(detail_frame, weight=1)
         self.detail = tk.Text(detail_frame, height=8, wrap="word",
-                              font=("Segoe UI", 10), state="disabled",
+                              font=_ui_font(10), state="disabled",
                               background="#fbfbfb")
         self.detail.pack(fill="both", expand=True)
 
@@ -135,7 +158,7 @@ class App(tk.Tk):
         log_frame = ttk.LabelFrame(self, text="Diario", padding=6)
         log_frame.pack(fill="x", padx=12, pady=(0, 10))
         self.log_text = tk.Text(log_frame, height=6, wrap="word",
-                                font=("Consolas", 9), state="disabled",
+                                font=_mono_font(9), state="disabled",
                                 background="#1e1e1e", foreground="#d4d4d4")
         self.log_text.pack(fill="both", expand=True)
 
@@ -249,6 +272,7 @@ class App(tk.Tk):
         self._row_to_recon.clear()
 
         counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+        confirmed_count = 0
 
         for host in results:
             label = host.ip
@@ -268,11 +292,20 @@ class App(tk.Tk):
             )
             for f in host.findings:
                 counts[f.severity] += 1
+                # Distingue una debolezza CONFERMATA da una semplice esposizione,
+                # cosi' i risultati davvero azionabili non si perdono nel rumore.
+                if f.confirmed:
+                    confirmed_count += 1
+                    sev_label = "✔ " + f.severity
+                    issue_label = f.issue
+                else:
+                    sev_label = f.severity
+                    issue_label = "[esposizione] " + f.issue
                 row = self.tree.insert(
                     host_node, "end",
                     text="",
-                    values=(f.severity, f.service,
-                            f.port if f.port else "—", f.issue),
+                    values=(sev_label, f.service,
+                            f.port if f.port else "—", issue_label),
                     tags=(f.severity,),
                 )
                 self._row_to_finding[row] = (host, f)
@@ -294,7 +327,10 @@ class App(tk.Tk):
         for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
             if counts[sev]:
                 parts.append("%s: %d" % (sev, counts[sev]))
-        summary = "Host analizzati: %d   |   Osservazioni: %d" % (len(results), total_find)
+        summary = ("Host analizzati: %d   |   Osservazioni: %d   "
+                   "(✔ confermate: %d · esposizioni: %d)"
+                   % (len(results), total_find,
+                      confirmed_count, total_find - confirmed_count))
         if parts:
             summary += "   |   " + "   ".join(parts)
         self.summary_var.set(summary)
@@ -332,11 +368,16 @@ class App(tk.Tk):
             host, f = self._row_to_finding[row]
             port_txt = ("%d  (%s)" % (f.port, f.service)) if f.port else \
                        ("enumerazione (%s)" % f.service)
+            if f.confirmed:
+                tipo = "✔ CONFERMATO (verifica attiva del servizio)"
+            else:
+                tipo = "Esposizione — porta aperta, debolezza NON verificata"
             lines = [
                 "Host:        %s%s" % (host.ip, "  (%s)" % host.hostname if host.hostname else ""),
                 "MAC:         %s" % (host.mac or "n/d"),
                 "Porta:       %s" % port_txt,
                 "Gravità:     %s" % f.severity,
+                "Tipo:        %s" % tipo,
                 "",
                 "Rischio:",
                 "  %s" % f.issue,
@@ -386,9 +427,13 @@ class App(tk.Tk):
     def _build_report_html(self):
         now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
         counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+        confirmed_count = 0
         for h in self.results:
             for f in h.findings:
                 counts[f.severity] += 1
+                if f.confirmed:
+                    confirmed_count += 1
+        total_find = sum(counts.values())
 
         rows = []
         for host in self.results:
@@ -406,13 +451,17 @@ class App(tk.Tk):
             for f in host.findings:
                 color = SEVERITY_COLOR.get(f.severity, "#000")
                 port_txt = str(f.port) if f.port else "—"
+                if f.confirmed:
+                    tag = '<span class="tag tag-conf">✔ CONFERMATO</span>'
+                else:
+                    tag = '<span class="tag tag-exp">esposizione</span>'
                 rows.append(
                     '<tr>'
-                    '<td><span class="badge" style="background:%s">%s</span></td>'
+                    '<td><span class="badge" style="background:%s">%s</span> %s</td>'
                     '<td>%s</td><td>%s</td><td>%s<br><small>%s</small></td>'
                     '<td>%s</td>'
                     '</tr>' % (
-                        color, f.severity, port_txt,
+                        color, f.severity, tag, port_txt,
                         html.escape(f.service),
                         html.escape(f.issue),
                         html.escape(f.evidence) if f.evidence else "",
@@ -432,6 +481,11 @@ class App(tk.Tk):
             % (SEVERITY_COLOR[s], s, counts[s])
             for s in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO") if counts[s]
         )
+        chips = ('<span class="chip" style="background:#2e7d32">'
+                 '✔ Confermate: %d</span> '
+                 '<span class="chip" style="background:#607d8b">'
+                 'Esposizioni: %d</span> ' % (
+                     confirmed_count, total_find - confirmed_count)) + chips
 
         return """<!DOCTYPE html>
 <html lang="it"><head><meta charset="utf-8">
@@ -443,7 +497,10 @@ class App(tk.Tk):
  header p{margin:4px 0 0;opacity:.9;font-size:13px}
  .wrap{padding:24px 32px}
  .chip,.badge{color:#fff;border-radius:12px;padding:3px 10px;font-size:12px;font-weight:600}
- .chips{margin:0 0 18px}
+ .chips{margin:0 0 18px;line-height:2}
+ .tag{font-size:10px;font-weight:700;border-radius:8px;padding:1px 6px;vertical-align:middle}
+ .tag-conf{background:#2e7d32;color:#fff}
+ .tag-exp{background:#eceff1;color:#607d8b;border:1px solid #cfd8dc}
  table{width:100%%;border-collapse:collapse;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.1)}
  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid #eee;font-size:13px;vertical-align:top}
  th{background:#fafafa;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#555}
@@ -459,6 +516,12 @@ class App(tk.Tk):
 </header>
 <div class="wrap">
  <div class="chips">%s</div>
+ <p style="font-size:12px;color:#555;margin:0 0 16px">
+  <b>✔ Confermato</b>: debolezza verificata attivamente sul servizio
+  (es. accesso senza password, SMBv1, community SNMP di default).
+  <b>Esposizione</b>: la porta è aperta ma non è stata provata alcuna
+  debolezza concreta — da verificare, non necessariamente vulnerabile.
+ </p>
  <table>
   <thead><tr><th>Gravità</th><th>Porta</th><th>Servizio</th>
   <th>Rischio / Evidenza</th><th>Rimedio consigliato</th></tr></thead>
