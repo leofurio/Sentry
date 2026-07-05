@@ -122,8 +122,13 @@ def _ping(ip, timeout_ms=600):
     """Esegue un singolo ping verso ip. Ritorna True se risponde."""
     system = platform.system().lower()
     if system == "windows":
+        # Windows: -w e' in millisecondi
         cmd = ["ping", "-n", "1", "-w", str(timeout_ms), str(ip)]
+    elif system == "darwin":
+        # macOS (BSD ping): -W e' in MILLISECONDI (a differenza di Linux)
+        cmd = ["ping", "-c", "1", "-W", str(timeout_ms), str(ip)]
     else:
+        # Linux (iputils): -W e' in SECONDI
         cmd = ["ping", "-c", "1", "-W", str(max(1, timeout_ms // 1000)), str(ip)]
     try:
         # CREATE_NO_WINDOW per non far lampeggiare console su Windows
