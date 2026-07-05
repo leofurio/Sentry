@@ -230,7 +230,7 @@ PORT_DB = {
         "service": "PostgreSQL",
         "severity": "HIGH",
         "issue": "Database PostgreSQL esposto: brute-force e configurazioni 'trust' insicure.",
-        "remediation": "Bind su localhost, pg_hba.conto restrittivo, password robuste, firewall.",
+        "remediation": "Bind su localhost, pg_hba.conf restrittivo, password robuste, firewall.",
     },
     5601: {
         "service": "Kibana",

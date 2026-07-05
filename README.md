@@ -11,14 +11,17 @@ servizi esposti e misconfigurazioni comuni da sanare. Scritta in **Python puro**
 
 ## Avvio
 
-**Modo semplice:** doppio click su `Sentry.bat`
+**Windows (modo semplice):** doppio click su `Sentry.bat`
 
-**Da terminale:**
-```powershell
+**Da terminale (Windows / macOS / Linux):**
+```bash
 python app.py
 ```
 
-Richiede Python 3.8+ (testato su 3.14) con Tkinter, incluso di serie in Windows.
+Richiede **Python 3.8+** con **Tkinter**. Su Windows è incluso di serie; su macOS
+e Linux può servire installarlo (es. `brew install python-tk` su macOS,
+`sudo apt install python3-tk` su Debian/Ubuntu). L'app è cross-platform: rileva
+il sistema operativo e adatta comandi (`ping`, `arp`) e font.
 
 ---
 
@@ -46,10 +49,22 @@ Puoi interrompere in qualsiasi momento con **■ Stop**.
 - **Controlli attivi sicuri** su misconfigurazioni frequenti:
   - FTP con **accesso anonimo** attivo;
   - **Redis** esposto senza password;
-  - **Telnet** in chiaro raggiungibile;
-  - **MongoDB** raggiungibile in rete.
+  - **MongoDB** senza autenticazione (verifica reale via wire protocol:
+    prova a eseguire `listDatabases` e distingue no-auth da auth attiva).
 - Ogni risultato include **gravità** (CRITICAL → INFO), **descrizione del rischio**
   e **rimedio concreto**.
+
+### ✔ Confermato vs Esposizione
+Per evitare falsi allarmi, Sentry distingue due tipi di osservazione:
+
+- **✔ Confermato** — una debolezza **verificata attivamente** sul servizio
+  (FTP anonimo accettato, Redis/Mongo senza password, SMBv1 negoziato, community
+  SNMP `public` valida, TLS obsoleto): è azionabile subito.
+- **Esposizione** — la porta è aperta ma **non è stata provata** alcuna debolezza:
+  va verificata, non è di per sé una vulnerabilità.
+
+Riepilogo e report mostrano i due conteggi separati, così i problemi reali non si
+perdono nel rumore delle porte semplicemente aperte.
 
 ### 🔎 Enumerazione — "cosa si può ottenere dalle porte aperte"
 Oltre a elencare le porte, Sentry mostra **quali dati un attaccante può ricavare**

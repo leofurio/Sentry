@@ -27,19 +27,30 @@ from vuln_db import COMMON_PORTS, get_port_info, SEVERITY_WEIGHT
 import recon
 
 
+# Quanti host analizzare in parallelo durante full_scan. Ogni host apre a sua
+# volta un pool per il port scan, quindi si tiene un valore contenuto.
+HOST_SCAN_WORKERS = 12
+
+
 # ---------------------------------------------------------------------------
 # Strutture dati
 # ---------------------------------------------------------------------------
 
 class Finding:
     """Una singola osservazione di sicurezza su un host."""
-    def __init__(self, port, service, severity, issue, remediation, evidence=""):
+    def __init__(self, port, service, severity, issue, remediation, evidence="",
+                 confirmed=False):
         self.port = port
         self.service = service
         self.severity = severity
         self.issue = issue
         self.remediation = remediation
         self.evidence = evidence  # eventuale prova concreta (es. banner)
+        # confirmed=True  -> misconfigurazione verificata attivamente (es. FTP
+        #                    anonimo, Redis no-auth, SMBv1 negoziato)
+        # confirmed=False -> semplice esposizione: la porta e' aperta ma non
+        #                    e' stata provata alcuna debolezza concreta
+        self.confirmed = confirmed
 
 
 class HostResult:
@@ -307,42 +318,22 @@ def _check_redis_noauth(ip, port=6379, timeout=2.0):
     return ""
 
 
-def _check_telnet_open(ip, port=23, timeout=2.0):
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            if s.connect_ex((ip, port)) == 0:
-                return "Servizio Telnet raggiungibile (protocollo in chiaro)"
-    except OSError:
-        pass
-    return ""
-
-
-def _check_mongo_noauth(ip, port=27017, timeout=2.0):
-    """Sonda MongoDB: se accetta TCP e non chiude subito, probabile esposizione."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            if s.connect_ex((ip, port)) == 0:
-                return "MongoDB raggiungibile in rete (verifica che l'autenticazione sia attiva)"
-    except OSError:
-        pass
-    return ""
-
-
-# Mappa porta -> funzione di controllo attivo (sicuro)
+# Mappa porta -> funzione di controllo attivo (sicuro) che, in caso di
+# misconfigurazione, ne restituisce una PROVA concreta. Telnet (esposizione in
+# chiaro) e' gia' coperto dal DB porte; MongoDB usa la sonda wire-protocol in
+# recon.mongo_probe, che distingue davvero l'accesso senza autenticazione.
 ACTIVE_CHECKS = {
     21: _check_ftp_anonymous,
-    23: _check_telnet_open,
     6379: _check_redis_noauth,
-    27017: _check_mongo_noauth,
 }
 
 
-def analyze_host(ip, ports=None, stop_event=None, log=None):
+def analyze_host(ip, ports=None, stop_event=None, log=None, arp_table=None):
     """
     Scansiona un host completo: porte, banner, controlli attivi.
     Ritorna un HostResult. log(str) e' un callback opzionale per il diario.
+    arp_table permette di riusare una tabella ARP gia' letta (evita di lanciare
+    'arp -a' una volta per host).
     """
     if ports is None:
         ports = COMMON_PORTS
@@ -355,8 +346,10 @@ def analyze_host(ip, ports=None, stop_event=None, log=None):
     except (socket.herror, socket.gaierror, OSError):
         result.hostname = ""
 
-    # MAC da ARP
-    result.mac = _read_arp_table().get(ip, "")
+    # MAC da ARP (riusa la tabella condivisa se fornita)
+    if arp_table is None:
+        arp_table = _read_arp_table()
+    result.mac = arp_table.get(ip, "")
 
     if log:
         log("Scansione porte su %s ..." % ip)
@@ -368,7 +361,9 @@ def analyze_host(ip, ports=None, stop_event=None, log=None):
             break
 
         info = get_port_info(port)
-        banner = grab_banner(ip, port)
+        # I servizi web sono gia' interrogati (una sola connessione) dalla fase
+        # di enumerazione HTTP/HTTPS: qui evitiamo un banner grab duplicato.
+        banner = "" if port in _WEB_PORTS else grab_banner(ip, port)
         if banner:
             result.banners[port] = banner
 
@@ -376,10 +371,12 @@ def analyze_host(ip, ports=None, stop_event=None, log=None):
         evidence = ""
         severity = info["severity"]
         issue = info["issue"]
+        confirmed = False
         if port in ACTIVE_CHECKS:
             ev = ACTIVE_CHECKS[port](ip)
             if ev:
                 evidence = ev
+                confirmed = True
                 # Una misconfig confermata alza la severita' al massimo sensato
                 if port == 21:
                     severity = "CRITICAL"
@@ -398,6 +395,7 @@ def analyze_host(ip, ports=None, stop_event=None, log=None):
             issue=issue,
             remediation=info["remediation"],
             evidence=evidence,
+            confirmed=confirmed,
         ))
 
     # --- Fase di enumerazione: "cosa si puo' ottenere" ---
@@ -412,6 +410,7 @@ def analyze_host(ip, ports=None, stop_event=None, log=None):
 # Porte web in chiaro / cifrate per l'enumerazione HTTP
 _HTTP_PORTS = (80, 8080, 8000, 8888, 8008, 3000, 5000, 9000, 8081)
 _HTTPS_PORTS = (443, 8443)
+_WEB_PORTS = frozenset(_HTTP_PORTS + _HTTPS_PORTS)
 
 
 def _add_recon(result, item):
@@ -421,7 +420,10 @@ def _add_recon(result, item):
     result.recon.append(item)
     if item.risk:
         severity, issue, remediation, evidence = item.risk
-        # porta 'logica' per il finding: 0 = informazione da enumerazione
+        # porta 'logica' per il finding: 0 = informazione da enumerazione.
+        # I rischi da enumerazione derivano da una verifica reale (SMBv1
+        # negoziato, community SNMP valida, MongoDB senza auth, TLS debole):
+        # sono quindi misconfigurazioni CONFERMATE, non semplici esposizioni.
         result.findings.append(Finding(
             port=0,
             service=item.source,
@@ -429,6 +431,7 @@ def _add_recon(result, item):
             issue=issue,
             remediation=remediation,
             evidence=evidence,
+            confirmed=True,
         ))
 
 
@@ -482,6 +485,13 @@ def _run_recon(ip, result, log=None):
             except Exception:
                 pass
 
+    # MongoDB (verifica reale se l'accesso e' senza autenticazione)
+    if 27017 in ports:
+        try:
+            _add_recon(result, recon.mongo_probe(ip))
+        except Exception:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # Orchestrazione completa
@@ -499,18 +509,40 @@ def full_scan(subnet, progress=None, log=None, stop_event=None):
     if log:
         log("Trovati %d host attivi." % len(alive))
 
+    # Leggi la tabella ARP UNA volta e condividila tra gli host: evita di
+    # lanciare 'arp -a' ripetutamente (una volta per host).
+    arp_table = _read_arp_table()
+
     results = []
     total = len(alive)
-    for i, ip in enumerate(alive, 1):
+    if total == 0:
+        return results
+
+    done = 0
+    lock = threading.Lock()
+
+    def work(ip):
         if stop_event and stop_event.is_set():
-            break
-        if progress:
-            progress(i, total, phase="scan")
-        res = analyze_host(ip, stop_event=stop_event, log=log)
-        results.append(res)
-        if log:
-            n = len(res.findings)
-            log("  %s: %d porte aperte, %d osservazioni." % (ip, len(res.open_ports), n))
+            return None
+        return analyze_host(ip, stop_event=stop_event, log=log, arp_table=arp_table)
+
+    # Analizza piu' host in parallelo: ogni host paga timeout UDP (NetBIOS/SNMP)
+    # e per-porta, quindi la serializzazione rendeva la scansione molto lenta.
+    workers = min(HOST_SCAN_WORKERS, total)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(work, ip): ip for ip in alive}
+        for fut in as_completed(futures):
+            res = fut.result()
+            with lock:
+                done += 1
+                if progress:
+                    progress(done, total, phase="scan")
+            if res is None:
+                continue
+            results.append(res)
+            if log:
+                log("  %s: %d porte aperte, %d osservazioni."
+                    % (res.ip, len(res.open_ports), len(res.findings)))
 
     # Ordina: host piu' a rischio in cima
     results.sort(key=lambda r: r.risk_score, reverse=True)
