@@ -13,10 +13,19 @@ servizi esposti e misconfigurazioni comuni da sanare. Scritta in **Python puro**
 
 **Windows (modo semplice):** doppio click su `Sentry.bat`
 
-**Da terminale (Windows / macOS / Linux):**
+**macOS (modo semplice):** doppio click su `Sentry.command`
+
+**Da terminale:**
 ```bash
+# macOS / Linux
+python3 app.py
+
+# Windows
 python app.py
 ```
+
+> Su macOS il comando è **`python3`**, non `python`: lanciare `python app.py`
+> dà `command not found` e l'app non si apre.
 
 Richiede **Python 3.8+** con **Tkinter**. Su Windows è incluso di serie; su macOS
 e Linux può servire installarlo (es. `brew install python-tk` su macOS,
